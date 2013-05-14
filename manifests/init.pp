@@ -6,50 +6,83 @@
 #
 class pe_shared_ca (
   $ca_server,
-  $purge_certs         = true,
   $manage_puppet_conf  = true,
-  $puppet_user         = $pe_shared_ca::params::puppet_user,
-  $puppet_group        = $pe_shared_ca::params::puppet_group,
-  $services            = $pe_shared_ca::params::services,
-  $source_uri          = "puppet:///modules/${module_name}/ssl",
-  $mco_credentials_uri = "puppet:///modules/${module_name}/credentials",
-) inherits pe_shared_ca::params {
+) {
+  case $::osfamily {
+    'debian': {
+      $services     = [
+        'pe-puppet-agent',
+        'pe-httpd',
+        'pe-mcollective',
+        'pe-activemq',
+      ]
+    }
+    'redhat': {
+      $services     = [
+        'pe-puppet',
+        'pe-httpd',
+        'pe-mcollective',
+        'pe-activemq',
+      ]
+    }
+  }
   validate_bool($ca_server)
 
   ## Stop services before purging cert files
-  service { $services:
-    ensure  => 'stopped',
-    before  => File[$mco_files_to_purge, $ca_files_to_purge],
-  }
+  #service { $services:
+  #  ensure  => 'stopped',
+  #  before  => File[$mco_files_to_purge, $ca_files_to_purge],
+  #}
+
+
+  #Function to read all puppet masters, make sure they have certs with dns alt names, provide $fqdn.uuid and add to autosign.conf with comment
 
   if $purge_certs {
     ## Purge old ssl files
-    file { $mco_files_to_purge:
-      ensure  => absent,
-      recurse => true,
-      force   => true,
-      before  => File['/etc/puppetlabs/mcollective/credentials'],
-    }
-    file { $ca_files_to_purge:
-      ensure  => absent,
-      recurse => true,
-      force   => true,
-      before  => File['/etc/puppetlabs/mcollective/credentials'],
-    }
+    # Replace with exec refreshonly
+    $ca_files_to_purge = [
+      "/etc/puppetlabs/puppet/ssl/certs/ca.pem",
+      "/etc/puppetlabs/puppet/ssl/certs/${::clientcert}.pem",
+      "/etc/puppetlabs/puppet/ssl/private_keys/${::clientcert}.pem",
+      "/etc/puppetlabs/puppet/ssl/public_keys/${::clientcert}.pem",
+      "/etc/puppetlabs/puppet/ssl/crl.pem",
+    ]
+    $mco_files_to_purge = [
+      "/etc/puppetlabs/mcollective/ssl",
+      "/etc/puppetlabs/activemq/broker.ks",
+      "/etc/puppetlabs/activemq/broker.p12",
+      "/etc/puppetlabs/activemq/broker.pem",
+      "/etc/puppetlabs/activemq/broker.ts",
+    ]
+
+    #file { $mco_files_to_purge:
+    #  ensure  => absent,
+    #  recurse => true,
+    #  force   => true,
+    #  before  => File['/etc/puppetlabs/mcollective/credentials'],
+    #}
+    #file { $ca_files_to_purge:
+    #  ensure  => absent,
+    #  recurse => true,
+    #  force   => true,
+    #  before  => File['/etc/puppetlabs/mcollective/credentials'],
+    #}
+  }
+
+  File {
+    ensure => file,
+    owner  => 'pe-puppet',
+    group  => 'pe-puppet',
+    notify => Service['pe-httpd'],
   }
 
   if $ca_server {
     ## Update CA directory and remove all pre-existing files
-    file { "/etc/puppetlabs/puppet/ssl/ca":
-      ensure  => directory,
-      owner   => $puppet_user,
-      group   => $puppet_group,
-      source  => "${source_uri}/ca",
-      recurse => true,
-      purge   => true,
-      force   => true,
-      require => File[$ca_files_to_purge, $mco_files_to_purge],
-    }
+    pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/ca/ca_crl.pem': }
+    pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/ca/ca_crt.pem': }
+    pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/ca/ca_key.pem': }
+    pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/ca/ca_pub.pem': }
+
     if $manage_puppet_conf {
       ini_setting { 'master ca setting':
         path    => '/etc/puppetlabs/puppet/puppet.conf',
@@ -76,36 +109,25 @@ class pe_shared_ca (
   }
 
   ## Update pe-internal certs
-  file { "/etc/puppetlabs/puppet/ssl/certs":
-    ensure  => directory,
-    owner   => $puppet_user,
-    group   => $puppet_group,
-    source  => "${source_uri}/certs",
-    recurse => true,
-  }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/certs/pe-internal-broker.pem': }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/certs/pe-internal-mcollective-servers.pem': }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/certs/pe-internal-peadmin-mcollective-client.pem': }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/certs/pe-internal-puppet-console-mcollective-client.pem': }
+
   ## Update pe-internal private_keys
-  file { "/etc/puppetlabs/puppet/ssl/private_keys":
-    ensure  => directory,
-    owner   => $puppet_user,
-    group   => $puppet_group,
-    mode    => '0640',
-    source  => "${source_uri}/private_keys",
-    recurse => true,
-  }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/private_keys/pe-internal-broker.pem': }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/private_keys/pe-internal-mcollective-servers.pem': }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/private_keys/pe-internal-peadmin-mcollective-client.pem': }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/private_keys/pe-internal-puppet-console-mcollective-client.pem': }
+
   ## Update pe-internal public_keys
-  file { "/etc/puppetlabs/puppet/ssl/public_keys":
-    ensure  => directory,
-    owner   => $puppet_user,
-    group   => $puppet_group,
-    source  => "${source_uri}/public_keys",
-    recurse => true,
-  }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/public_keys/pe-internal-broker.pem': }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/public_keys/pe-internal-mcollective-servers.pem': }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/public_keys/pe-internal-peadmin-mcollective-client.pem': }
+  pe_shared_ca::copy { '/etc/puppetlabs/puppet/ssl/public_keys/pe-internal-puppet-console-mcollective-client.pem': }
+
   ## Update MCO credentials file
-  file { "/etc/puppetlabs/mcollective/credentials":
-    ensure => file,
-    owner  => $puppet_user,
-    group  => $puppet_group,
-    source => $mco_credentials_uri,
+  pe_shared_ca::copy { '/etc/puppetlabs/mcollective/credentials':
     mode   => '0600',
   }
 }
